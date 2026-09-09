@@ -33,7 +33,7 @@ let package = Package(
     ],
     dependencies: [
         // PySwiftAST for parsing Python code in event handlers
-        .package(url: "https://github.com/Py-Swift/PySwiftAST.git", branch: "master")
+        .package(url: "https://github.com/Py-Swift/PySwiftAST.git", exact: "0.0.1")
     ],
     targets: [
         // Kivy widget registry target
