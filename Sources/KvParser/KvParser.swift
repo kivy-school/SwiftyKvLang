@@ -126,6 +126,25 @@ public final class KvParser {
                 )
             }
             
+        case "from":
+            // #:from module.path import name [as alias]
+            let words = content.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
+            if words.count >= 4, words[2] == "import" {
+                var alias: String? = nil
+                if words.count >= 6, words[4] == "as" {
+                    alias = words[5]
+                } else if words.count != 4 {
+                    break
+                }
+                return .from(module: words[1], name: words[3], alias: alias, line: line)
+            }
+            
+        case "mode":
+            // #:mode default|carbonkivy|nucleant|swiftui
+            if parts.count == 2 {
+                return .mode(name: parts[1], line: line)
+            }
+            
         case "set":
             // #:set name value
             if parts.count >= 3 {
@@ -213,8 +232,8 @@ public final class KvParser {
         }
         advance()
         
-        // Parse rule body (properties, canvas, children)
-        let (properties, handlers, canvas, canvasBefore, canvasAfter, children) = try parseRuleBody()
+        // Parse rule body (properties, canvas, children, conditionals)
+        let body = try parseRuleBody()
         
         // Expect DEDENT
         if case .dedent = peek().type {
@@ -223,12 +242,7 @@ public final class KvParser {
         
         return KvRule(
             selector: selector,
-            properties: properties,
-            children: children,
-            canvasBefore: canvasBefore,
-            canvas: canvas,
-            canvasAfter: canvasAfter,
-            handlers: handlers,
+            body: body,
             avoidPrevious: avoidPrevious,
             line: startToken.line
         )
@@ -364,7 +378,7 @@ public final class KvParser {
         }
         advance()
         
-        let (properties, handlers, canvas, canvasBefore, canvasAfter, children) = try parseRuleBody()
+        let body = try parseRuleBody()
         
         if case .dedent = peek().type {
             advance()
@@ -372,12 +386,7 @@ public final class KvParser {
         
         let rule = KvRule(
             selector: .name(name),
-            properties: properties,
-            children: children,
-            canvasBefore: canvasBefore,
-            canvas: canvas,
-            canvasAfter: canvasAfter,
-            handlers: handlers,
+            body: body,
             line: startToken.line
         )
         
@@ -419,45 +428,29 @@ public final class KvParser {
         }
         advance()
         
-        let (properties, handlers, canvas, canvasBefore, canvasAfter, children) = try parseRuleBody()
+        var body = try parseRuleBody()
         
         if case .dedent = peek().type {
             advance()
         }
         
         // Extract id from properties
-        let id = properties.first { $0.name == "id" }?.value
+        let id = body.properties.first { $0.name == "id" }?.value
+        body.properties.removeAll { $0.name == "id" }
         
         return KvWidget(
             name: name,
             id: id,
-            properties: properties.filter { $0.name != "id" },
-            children: children,
-            canvasBefore: canvasBefore,
-            canvas: canvas,
-            canvasAfter: canvasAfter,
-            handlers: handlers,
+            body: body,
             level: level,
             line: startToken.line
         )
     }
     
-    /// Parse rule/widget body (properties, canvas, children)
+    /// Parse rule/widget body (properties, canvas, children, conditionals)
     /// Reference: parser.py lines 640-777
-    private func parseRuleBody() throws -> (
-        properties: [KvProperty],
-        handlers: [KvProperty],
-        canvas: KvCanvas?,
-        canvasBefore: KvCanvas?,
-        canvasAfter: KvCanvas?,
-        children: [KvWidget]
-    ) {
-        var properties: [KvProperty] = []
-        var handlers: [KvProperty] = []
-        var canvas: KvCanvas? = nil
-        var canvasBefore: KvCanvas? = nil
-        var canvasAfter: KvCanvas? = nil
-        var children: [KvWidget] = []
+    private func parseRuleBody() throws -> KvBody {
+        var body = KvBody()
         
         while !isAtEnd {
             skipNewlines()
@@ -506,13 +499,17 @@ public final class KvParser {
                     
                     switch canvasType {
                     case "canvas.before":
-                        canvasBefore = canvasNode
+                        body.canvasBefore = canvasNode
                     case "canvas.after":
-                        canvasAfter = canvasNode
+                        body.canvasAfter = canvasNode
                     default:
-                        canvas = canvasNode
+                        body.canvas = canvasNode
                     }
                 }
+            }
+            // Check for conditional block: if <cond>: / try:
+            else if case .identifier(let name) = token.type, Self.conditionalKeywords.contains(name) {
+                body.conditionals.append(try parseConditional())
             }
             // Check for property or child widget
             else if case .identifier(let name) = token.type {
@@ -527,16 +524,16 @@ public final class KvParser {
                         // It's a child widget
                         current = nextIdx - 1 // Reset to identifier
                         let child = try parseWidget(level: 1) // level is relative
-                        children.append(child)
+                        body.children.append(child)
                     } else {
                         // It's a property (including multi-line properties)
                         current = nextIdx - 1 // Reset to identifier
                         let property = try parseProperty()
                         
                         if name.hasPrefix("on_") {
-                            handlers.append(property)
+                            body.handlers.append(property)
                         } else {
-                            properties.append(property)
+                            body.properties.append(property)
                         }
                     }
                 } else {
@@ -548,7 +545,96 @@ public final class KvParser {
             }
         }
         
-        return (properties, handlers, canvas, canvasBefore, canvasAfter, children)
+        return body
+    }
+    
+    // MARK: - Conditional Parsing
+    
+    /// Keywords that open a conditional block or its alternate branch
+    private static let conditionalKeywords: Swift.Set<String> = ["if", "else", "try", "expect", "except"]
+    
+    /// Parse `if <cond>:` ... `else:` or `try:` ... `expect:` blocks
+    private func parseConditional() throws -> KvConditional {
+        let startToken = peek()
+        guard case .identifier(let keyword) = startToken.type else {
+            throw KvParserError.unexpectedToken(token: startToken, expected: "if or try")
+        }
+        
+        let kind: KvConditional.Kind
+        switch keyword {
+        case "if":
+            advance()
+            let condition = try parseConditionHeader()
+            let compiled = KvCompiler.compile(propertyName: "if", value: condition)
+            kind = .if(condition: condition, watchedKeys: compiled.watchedKeys)
+        case "try":
+            advance()
+            guard case .colon = peek().type else {
+                throw KvParserError.unexpectedToken(token: peek(), expected: ":")
+            }
+            advance()
+            kind = .try
+        default:
+            throw KvParserError.syntaxError(
+                line: startToken.line,
+                message: "'\(keyword)' without a preceding \(keyword == "else" ? "if" : "try") block"
+            )
+        }
+        
+        let body = try parseConditionalBranch(keyword: keyword, line: startToken.line)
+        
+        // Optional else / expect branch at the same level
+        var elseBody: KvBody? = nil
+        skipNewlines()
+        if case .identifier(let next) = peek().type,
+           next == (kind == .try ? "expect" : "else") || (kind == .try && next == "except") {
+            let elseToken = advance()
+            guard case .colon = peek().type else {
+                throw KvParserError.unexpectedToken(token: peek(), expected: ":")
+            }
+            advance()
+            elseBody = try parseConditionalBranch(keyword: next, line: elseToken.line)
+        }
+        
+        return KvConditional(kind: kind, body: body, elseBody: elseBody, line: startToken.line)
+    }
+    
+    /// Collect the condition of an `if` up to the trailing colon on the line
+    private func parseConditionHeader() throws -> String {
+        var lineTokens: [Token] = []
+        while !isAtEnd {
+            let token = peek()
+            if case .newline = token.type { break }
+            if case .dedent = token.type { break }
+            if case .comment = token.type { advance(); continue }
+            lineTokens.append(token)
+            advance()
+        }
+        
+        guard let colonIndex = lineTokens.lastIndex(where: { $0.type == .colon }) else {
+            throw KvParserError.syntaxError(line: peek().line, message: "Expected ':' after if condition")
+        }
+        let condition = reconstructValue(from: Array(lineTokens[..<colonIndex]))
+        guard !condition.isEmpty else {
+            throw KvParserError.syntaxError(line: peek().line, message: "Empty if condition")
+        }
+        return condition
+    }
+    
+    /// Parse the indented body following a conditional header
+    private func parseConditionalBranch(keyword: String, line: Int) throws -> KvBody {
+        skipNewlines()
+        guard case .indent = peek().type else {
+            throw KvParserError.syntaxError(line: line, message: "Expected indented block after '\(keyword)'")
+        }
+        advance()
+        
+        let body = try parseRuleBody()
+        
+        if case .dedent = peek().type {
+            advance()
+        }
+        return body
     }
     
     // MARK: - Property Parsing
@@ -566,6 +652,12 @@ public final class KvParser {
             throw KvParserError.unexpectedToken(token: peek(), expected: ":")
         }
         advance()
+        
+        // `name: |` -- the tokenizer has already gathered the block
+        if case .block(let code) = peek().type {
+            advance()
+            return makeProperty(name: name, value: code, isBlock: true, line: startToken.line)
+        }
         
         // Collect value tokens until newline
         var valueTokens: [Token] = []
@@ -591,18 +683,23 @@ public final class KvParser {
             if case .indent = peek().type {
                 advance() // consume indent
                 
-                // Collect continuation lines
+                // Collect continuation lines. A Python block in a handler
+                // indents further still; only the dedent back to the
+                // property's own level ends the value.
+                var depth = 0
                 while !isAtEnd {
                     skipNewlines()
                     
                     let token = peek()
                     if case .dedent = token.type {
                         advance() // consume dedent
-                        break
+                        if depth == 0 { break }
+                        depth -= 1
+                        continue
                     }
                     if case .indent = token.type {
-                        // Nested indent within multi-line value - just consume and continue
                         advance()
+                        depth += 1
                         continue
                     }
                     
@@ -624,27 +721,28 @@ public final class KvParser {
         
         // Reconstruct value string from tokens
         let value = reconstructValue(from: valueTokens)
-        
-        // Compile the property to extract watched keys
+        return makeProperty(name: name, value: value, isBlock: false, line: startToken.line)
+    }
+    
+    /// Compile the value for watched keys and, for handlers and blocks,
+    /// parse it as Python statements.
+    private func makeProperty(name: String, value: String, isBlock: Bool, line: Int) -> KvProperty {
         let compiled = KvCompiler.compile(propertyName: name, value: value)
         
-        // Parse Python AST for event handlers
-        let pythonAST: [Statement]?
-        if KvPythonParser.isHandler(name) {
-            pythonAST = KvPythonParser.parseHandler(value)
-            // Note: Parse may fail if value contains special characters not preserved by tokenization
-            // (e.g., semicolons are not tokenized separately)
-        } else {
-            pythonAST = nil
-        }
+        // Note: Parse may fail if value contains special characters not preserved by tokenization
+        // (e.g., semicolons are not tokenized separately)
+        let pythonAST: [Statement]? = (isBlock || KvPythonParser.isHandler(name))
+            ? KvPythonParser.parseHandler(value)
+            : nil
         
         return KvProperty(
             name: name,
             value: value,
-            compiledValue: .expression(value),
+            compiledValue: isBlock ? .code(value) : .expression(value),
             watchedKeys: compiled.watchedKeys,
+            isBlock: isBlock,
             pythonAST: pythonAST,
-            line: startToken.line
+            line: line
         )
     }
     
@@ -694,6 +792,13 @@ public final class KvParser {
             case .plus:
                 result += "+"
                 needsSpace = true
+            case .leftAngle, .rightAngle:
+                // `>=` arrives as `>` then `=`; no space between them
+                result += token.type == .leftAngle ? "<" : ">"
+                needsSpace = false
+            case .at:
+                result += "@"
+                needsSpace = true
             default:
                 break
             }
@@ -701,10 +806,10 @@ public final class KvParser {
         return result.trimmingCharacters(in: .whitespaces)
     }
     
-    /// Check if token is a dot or bracket that should connect without space
+    /// Check if token is a dot, bracket or comma that should connect without space
     private func isDotOrBracket(_ token: Token) -> Bool {
         switch token.type {
-        case .dot, .leftBracket, .rightBracket:
+        case .dot, .leftBracket, .rightBracket, .comma:
             return true
         default:
             return false

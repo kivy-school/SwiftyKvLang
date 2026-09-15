@@ -35,6 +35,12 @@ public protocol KvVisitor: AnyObject {
     /// Visit a property
     func visitProperty(_ property: KvProperty)
     
+    /// Visit a conditional block (if/else, try/expect)
+    func visitConditional(_ conditional: KvConditional)
+    
+    /// Visit the contents of a rule, widget, or conditional branch body
+    func visitBody(_ body: KvBody)
+    
     /// Visit canvas
     func visitCanvas(_ canvas: KvCanvas)
     
@@ -64,30 +70,10 @@ extension KvVisitor {
     /// Default implementation: no-op
     public func visitDirective(_ directive: KvDirective) {}
     
-    /// Default implementation: traverse children
+    /// Default implementation: traverse body
     public func visitRule(_ rule: KvRule) {
         visitSelector(rule.selector)
-        
-        for property in rule.properties {
-            visitProperty(property)
-        }
-        for handler in rule.handlers {
-            visitProperty(handler)
-        }
-        
-        if let canvas = rule.canvas {
-            visitCanvas(canvas)
-        }
-        if let canvasBefore = rule.canvasBefore {
-            visitCanvas(canvasBefore)
-        }
-        if let canvasAfter = rule.canvasAfter {
-            visitCanvas(canvasAfter)
-        }
-        
-        for child in rule.children {
-            visitWidget(child)
-        }
+        visitBody(rule.body)
     }
     
     /// Default implementation: no-op
@@ -98,32 +84,48 @@ extension KvVisitor {
         visitRule(template.rule)
     }
     
-    /// Default implementation: traverse children
+    /// Default implementation: traverse body
     public func visitWidget(_ widget: KvWidget) {
-        for property in widget.properties {
-            visitProperty(property)
-        }
-        for handler in widget.handlers {
-            visitProperty(handler)
-        }
-        
-        if let canvas = widget.canvas {
-            visitCanvas(canvas)
-        }
-        if let canvasBefore = widget.canvasBefore {
-            visitCanvas(canvasBefore)
-        }
-        if let canvasAfter = widget.canvasAfter {
-            visitCanvas(canvasAfter)
-        }
-        
-        for child in widget.children {
-            visitWidget(child)
-        }
+        visitBody(widget.body)
     }
     
     /// Default implementation: no-op
     public func visitProperty(_ property: KvProperty) {}
+    
+    /// Default implementation: traverse both branches
+    public func visitConditional(_ conditional: KvConditional) {
+        visitBody(conditional.body)
+        if let elseBody = conditional.elseBody {
+            visitBody(elseBody)
+        }
+    }
+    
+    /// Default implementation: traverse every member of the body
+    public func visitBody(_ body: KvBody) {
+        for property in body.properties {
+            visitProperty(property)
+        }
+        for handler in body.handlers {
+            visitProperty(handler)
+        }
+        
+        if let canvas = body.canvas {
+            visitCanvas(canvas)
+        }
+        if let canvasBefore = body.canvasBefore {
+            visitCanvas(canvasBefore)
+        }
+        if let canvasAfter = body.canvasAfter {
+            visitCanvas(canvasAfter)
+        }
+        
+        for child in body.children {
+            visitWidget(child)
+        }
+        for conditional in body.conditionals {
+            visitConditional(conditional)
+        }
+    }
     
     /// Default implementation: traverse instructions
     public func visitCanvas(_ canvas: KvCanvas) {
@@ -198,6 +200,13 @@ extension KvCanvas {
     }
 }
 
+extension KvConditional {
+    /// Accept a visitor
+    public func accept<V: KvVisitor>(visitor: V) {
+        visitor.visitConditional(self)
+    }
+}
+
 extension KvCanvasInstruction {
     /// Accept a visitor
     public func accept<V: KvVisitor>(visitor: V) {
@@ -226,14 +235,7 @@ public class WidgetNameCollector: KvVisitor {
     
     public func visitWidget(_ widget: KvWidget) {
         widgetNames.append(widget.name)
-        
-        // Continue traversal
-        for property in widget.properties {
-            visitProperty(property)
-        }
-        for child in widget.children {
-            visitWidget(child)
-        }
+        visitBody(widget.body)
     }
 }
 
@@ -257,18 +259,18 @@ public class WatchedPropertyFinder: KvVisitor {
     
     public func visitRule(_ rule: KvRule) {
         currentRule = rule.selector.primaryName
-        
-        // Visit properties
-        for property in rule.properties {
-            visitProperty(property)
-        }
-        
-        // Continue with children
-        for child in rule.children {
-            visitWidget(child)
-        }
-        
+        visitBody(rule.body)
         currentRule = nil
+    }
+    
+    public func visitConditional(_ conditional: KvConditional) {
+        if case .if(_, let keys) = conditional.kind, !keys.isEmpty {
+            watchedProperties.append((rule: currentRule ?? "unknown", property: "if", keys: keys))
+        }
+        visitBody(conditional.body)
+        if let elseBody = conditional.elseBody {
+            visitBody(elseBody)
+        }
     }
     
     public func visitProperty(_ property: KvProperty) {
@@ -294,6 +296,7 @@ public class ASTStatistics: KvVisitor {
     public var propertyCount = 0
     public var canvasInstructionCount = 0
     public var directiveCount = 0
+    public var conditionalCount = 0
     
     public init() {}
     
@@ -303,26 +306,7 @@ public class ASTStatistics: KvVisitor {
     
     public func visitRule(_ rule: KvRule) {
         ruleCount += 1
-        
-        // Continue traversal
-        for property in rule.properties {
-            visitProperty(property)
-        }
-        for handler in rule.handlers {
-            visitProperty(handler)
-        }
-        if let canvas = rule.canvas {
-            visitCanvas(canvas)
-        }
-        if let canvasBefore = rule.canvasBefore {
-            visitCanvas(canvasBefore)
-        }
-        if let canvasAfter = rule.canvasAfter {
-            visitCanvas(canvasAfter)
-        }
-        for child in rule.children {
-            visitWidget(child)
-        }
+        visitBody(rule.body)
     }
     
     public func visitTemplate(_ template: KvTemplate) {
@@ -332,18 +316,19 @@ public class ASTStatistics: KvVisitor {
     
     public func visitWidget(_ widget: KvWidget) {
         widgetCount += 1
-        
-        // Continue traversal
-        for property in widget.properties {
-            visitProperty(property)
-        }
-        for child in widget.children {
-            visitWidget(child)
-        }
+        visitBody(widget.body)
     }
     
     public func visitProperty(_ property: KvProperty) {
         propertyCount += 1
+    }
+    
+    public func visitConditional(_ conditional: KvConditional) {
+        conditionalCount += 1
+        visitBody(conditional.body)
+        if let elseBody = conditional.elseBody {
+            visitBody(elseBody)
+        }
     }
     
     public func visitCanvasInstruction(_ instruction: KvCanvasInstruction) {
@@ -364,6 +349,7 @@ public class ASTStatistics: KvVisitor {
           Widgets: \(widgetCount)
           Properties: \(propertyCount)
           Canvas Instructions: \(canvasInstructionCount)
+          Conditionals: \(conditionalCount)
         """
     }
 }

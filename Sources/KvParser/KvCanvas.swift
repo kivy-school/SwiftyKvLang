@@ -70,7 +70,7 @@ extension KvCanvas: TreeDisplayable {
             for (propIndex, prop) in instruction.properties.enumerated() {
                 let isPropLast = propIndex == instruction.properties.count - 1
                 let propPrefix = TreeFormatter.prefix(depth: depth + 1, isLast: isPropLast, parentBranches: parentBranches + [!isLast])
-                result += "\(propPrefix)\(prop.name): \(prop.value) [property, line \(prop.line)]\n"
+                result += "\(propPrefix)\(prop.name): \(prop.displayValue) [property, line \(prop.line)]\n"
             }
         }
         

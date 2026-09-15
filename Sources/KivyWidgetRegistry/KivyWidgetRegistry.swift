@@ -277,7 +277,10 @@ public class KivyWidgetRegistry {
             baseClasses: [],
             directProperties: [
                 KivyPropertyInfo(name: "always_release", type: .booleanProperty),
+                KivyPropertyInfo(name: "last_touch", type: .objectProperty),
+                KivyPropertyInfo(name: "min_state_time", type: .numericProperty),
                 KivyPropertyInfo(name: "pressed", type: .aliasProperty),
+                KivyPropertyInfo(name: "state", type: .optionProperty),
             ]
         ),
         

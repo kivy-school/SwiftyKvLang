@@ -24,6 +24,43 @@ SwiftyKvLang is a production-quality parser for the [Kivy](https://kivy.org) KV 
 - **Properties**: Reactive bindings with watched key extraction
 - **Event Handlers**: `on_*` properties with code blocks
 
+### ➕ Extensions Beyond Kivy's Parser
+
+- **`#:mode <name>`**: Tags the file with a generator dialect (`default`, `carbonkivy`, `nucleant`, `swiftui`). Read it back with `module.mode`; `KvMode` lists the known names.
+- **`#:from module.path import name [as alias]`**: From-style import alongside `#:import`.
+- **Conditional blocks**: `if <expr>:` / `else:` and `try:` / `expect:` (also `except:`) inside any rule or widget body. A branch body holds anything a normal body can — properties, handlers, canvas layers, children, nested conditionals. `if` conditions are compiled like property values, so `watchedKeys` is available for reactive rebinding.
+
+```kv
+<MyWidget@BoxLayout>:
+    if self.disabled_state:
+        Label:
+            text: "no press"
+    else:
+        Button:
+            text: "press me"
+    try:
+        Button:
+            text: "success"
+    expect:
+        Label:
+            text: "failed"
+```
+
+Conditionals land in `rule.conditionals` / `widget.conditionals` as `KvConditional` nodes; `KvBody` bundles a body's members (each node keeps its `line` for source ordering).
+
+- **Code blocks**: `name: |` followed by an indented block makes the value a Python code block instead of an expression (`KvProperty.isBlock`, `compiledValue: .code`). The tokenizer keeps the lines verbatim, dedented, so `pythonAST` holds the parsed statements. Anything else after `:` -- including `self.a | self.b` -- is still an expression.
+
+```kv
+Button:
+    text: |
+        if self.state == "down":
+            return "pressed"
+        return "released"
+    on_press: |
+        # as many lines as you like
+        print("pressed")
+```
+
 ### 🏗️ Architecture
 
 - **YAML-Inspired Indentation**: Dynamic indent detection, INDENT/DEDENT tokens
@@ -36,11 +73,13 @@ SwiftyKvLang is a production-quality parser for the [Kivy](https://kivy.org) KV 
 
 ```swift
 KvModule          // Root: directives, rules, templates, root widget
-KvDirective       // Preprocessor: kivy, import, set, include
+KvDirective       // Preprocessor: kivy, import, from, set, include, mode
 KvRule            // Widget class rules with selectors
 KvSelector        // name, className, multiple, dynamicClass
 KvWidget          // Widget instances with properties/children
 KvProperty        // Property assignments with compiled values
+KvConditional     // if/else and try/expect blocks
+KvBody            // Members of a rule, widget, or branch body
 KvCanvas          // Canvas layers (before/root/after)
 KvCanvasInstruction // Graphics instructions (Color, Rectangle, etc.)
 ```

@@ -78,6 +78,7 @@ public struct KvCompiler {
         
         // For exec mode, we don't need to watch any keys
         // Event handlers are called explicitly, not reactively
+        // (a `name: |` block that computes a value is eval mode and still watches)
         if mode == .exec {
             return KvCompiledPropertyValue(value: value, mode: mode, watchedKeys: [])
         }
@@ -100,13 +101,14 @@ public struct KvCompiler {
         // We don't want to match patterns inside strings
         let withoutStrings = removeStrings(from: value)
         
-        // Remove comments (everything after #)
-        let withoutComments: String
-        if let commentIndex = withoutStrings.firstIndex(of: "#") {
-            withoutComments = String(withoutStrings[..<commentIndex])
-        } else {
-            withoutComments = withoutStrings
-        }
+        // Remove comments, line by line so a block keeps its later lines
+        let withoutComments = withoutStrings
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { line -> Substring in
+                if let commentIndex = line.firstIndex(of: "#") { return line[..<commentIndex] }
+                return line
+            }
+            .joined(separator: "\n")
         
         // Extract dotted attribute paths (e.g., self.width, root.opacity)
         let keyValueMatches = Self.keyValueRegex.matches(

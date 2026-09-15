@@ -37,6 +37,9 @@ public struct KvRule: KvNode, Sendable {
     /// Event handlers (properties starting with on_)
     public let handlers: [KvProperty]
     
+    /// Conditional blocks (if/else, try/expect)
+    public let conditionals: [KvConditional]
+    
     /// If true, avoid applying previous rules for this selector
     /// Indicated by - prefix in selector: <-Button>
     public let avoidPrevious: Bool
@@ -55,6 +58,7 @@ public struct KvRule: KvNode, Sendable {
         canvas: KvCanvas? = nil,
         canvasAfter: KvCanvas? = nil,
         handlers: [KvProperty] = [],
+        conditionals: [KvConditional] = [],
         avoidPrevious: Bool = false,
         line: Int,
         column: Int = 0,
@@ -68,11 +72,40 @@ public struct KvRule: KvNode, Sendable {
         self.canvas = canvas
         self.canvasAfter = canvasAfter
         self.handlers = handlers
+        self.conditionals = conditionals
         self.avoidPrevious = avoidPrevious
         self.line = line
         self.column = column
         self.endLine = endLine
         self.endColumn = endColumn
+    }
+    
+    public init(selector: KvSelector, body: KvBody, avoidPrevious: Bool = false, line: Int) {
+        self.init(
+            selector: selector,
+            properties: body.properties,
+            children: body.children,
+            canvasBefore: body.canvasBefore,
+            canvas: body.canvas,
+            canvasAfter: body.canvasAfter,
+            handlers: body.handlers,
+            conditionals: body.conditionals,
+            avoidPrevious: avoidPrevious,
+            line: line
+        )
+    }
+    
+    /// Body contents as a single value
+    public var body: KvBody {
+        KvBody(
+            properties: properties,
+            handlers: handlers,
+            canvasBefore: canvasBefore,
+            canvas: canvas,
+            canvasAfter: canvasAfter,
+            children: children,
+            conditionals: conditionals
+        )
     }
 }
 
@@ -118,117 +151,19 @@ extension KvRule: TreeDisplayable {
             }
         }
         
+        if !conditionals.isEmpty {
+            result += "\(prefix)  Conditionals (\(conditionals.count)):\n"
+            for conditional in conditionals {
+                result += conditional.treeDescription(indent: indent + 2)
+            }
+        }
+        
         return result
     }
     
     /// Detailed tree content for deep traversal
     internal func detailedContent(depth: Int, parentBranches: [Bool]) -> String {
-        var result = ""
-        var childIndex = 0
-        
-        // Calculate total items
-        let totalItems = properties.count + handlers.count + 
-                        (canvasBefore != nil ? 1 : 0) + 
-                        (canvas != nil ? 1 : 0) + 
-                        (canvasAfter != nil ? 1 : 0) + 
-                        children.count
-        
-        // Properties
-        for prop in properties {
-            let isLast = childIndex == totalItems - 1
-            let prefix = TreeFormatter.prefix(depth: depth, isLast: isLast, parentBranches: parentBranches)
-            result += "\(prefix)\(prop.name): \(prop.value) [property, line \(prop.line)]\n"
-            childIndex += 1
-        }
-        
-        // Event handlers
-        for handler in handlers {
-            let isLast = childIndex == totalItems - 1
-            let prefix = TreeFormatter.prefix(depth: depth, isLast: isLast, parentBranches: parentBranches)
-            result += "\(prefix)\(handler.name): \(handler.value) [handler, line \(handler.line)]\n"
-            
-            // Show Python AST if available
-            if let ast = handler.pythonAST, !ast.isEmpty {
-                result += formatPythonAST(ast, depth: depth + 1, parentBranches: parentBranches + [!isLast])
-            }
-            
-            childIndex += 1
-        }
-        
-        // Canvas.before
-        if let canvasBefore = canvasBefore {
-            let isLast = childIndex == totalItems - 1
-            let prefix = TreeFormatter.prefix(depth: depth, isLast: isLast, parentBranches: parentBranches)
-            result += "\(prefix)canvas.before [canvas, line \(canvasBefore.line)]\n"
-            result += canvasBefore.detailedContent(depth: depth + 1, parentBranches: parentBranches + [!isLast])
-            childIndex += 1
-        }
-        
-        // Canvas
-        if let canvas = canvas {
-            let isLast = childIndex == totalItems - 1
-            let prefix = TreeFormatter.prefix(depth: depth, isLast: isLast, parentBranches: parentBranches)
-            result += "\(prefix)canvas [canvas, line \(canvas.line)]\n"
-            result += canvas.detailedContent(depth: depth + 1, parentBranches: parentBranches + [!isLast])
-            childIndex += 1
-        }
-        
-        // Canvas.after
-        if let canvasAfter = canvasAfter {
-            let isLast = childIndex == totalItems - 1
-            let prefix = TreeFormatter.prefix(depth: depth, isLast: isLast, parentBranches: parentBranches)
-            result += "\(prefix)canvas.after [canvas, line \(canvasAfter.line)]\n"
-            result += canvasAfter.detailedContent(depth: depth + 1, parentBranches: parentBranches + [!isLast])
-            childIndex += 1
-        }
-        
-        // Child widgets
-        for child in children {
-            let isLast = childIndex == totalItems - 1
-            let prefix = TreeFormatter.prefix(depth: depth, isLast: isLast, parentBranches: parentBranches)
-            let idInfo = child.id != nil ? ", id: \(child.id!)" : ""
-            result += "\(prefix)\(child.name) [widget, line \(child.line)\(idInfo)]\n"
-            result += child.detailedContent(depth: depth + 1, parentBranches: parentBranches + [!isLast])
-            childIndex += 1
-        }
-        
-        return result
-    }
-    
-    /// Format Python AST statements for tree display
-    private func formatPythonAST(_ statements: [Statement], depth: Int, parentBranches: [Bool]) -> String {
-        var result = ""
-        for (index, stmt) in statements.enumerated() {
-            let isLast = index == statements.count - 1
-            let stmtLines = stmt.treeLines(indent: "", isLast: isLast)
-            
-            for (lineIndex, line) in stmtLines.enumerated() {
-                let prefix: String
-                
-                if lineIndex == 0 {
-                    // First line gets branch character
-                    prefix = TreeFormatter.prefix(depth: depth, isLast: isLast, parentBranches: parentBranches)
-                } else {
-                    // Continuation lines - need proper indentation matching tree structure
-                    var indent = ""
-                    for i in 0..<depth {
-                        if i < parentBranches.count && parentBranches[i] {
-                            indent += "│   "
-                        } else {
-                            indent += "    "
-                        }
-                    }
-                    // Add continuation for current level
-                    indent += isLast ? "    " : "│   "
-                    prefix = indent
-                }
-                
-                // Remove leading branch chars from PySwiftAST output since we're adding our own
-                let cleanLine = line.replacingOccurrences(of: "^[├└]── ", with: "", options: .regularExpression)
-                result += "\(prefix)\(cleanLine) [python_ast]\n"
-            }
-        }
-        return result
+        body.detailedContent(depth: depth, parentBranches: parentBranches)
     }
 }
 

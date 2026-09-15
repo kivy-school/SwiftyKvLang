@@ -29,6 +29,10 @@ public enum TokenType: Equatable, Sendable {
     case string(String)
     case number(String)
     
+    /// Code block opened by `: |`; the indented lines below, dedented and
+    /// joined with newlines. Emitted in place of the value tokens.
+    case block(String)
+    
     // Special keywords
     case canvas          // canvas, canvas.before, canvas.after
     case canvasBefore    // canvas.before
@@ -82,6 +86,9 @@ public final class KvTokenizer: Sendable {
     private var indentSize: Int? = nil     // Detected on first indent
     private var pendingTokens: [Token] = []
     private var atLineStart = true
+    private var lastTokenType: TokenType? = nil
+    /// Indentation of the line being scanned, for block values
+    private var currentLineIndent = 0
     
     public init(source: String) {
         self.source = source
@@ -100,6 +107,7 @@ public final class KvTokenizer: Sendable {
         while true {
             let token = try nextToken()
             tokens.append(token)
+            lastTokenType = token.type
             if token.type == .eof {
                 break
             }
@@ -153,6 +161,11 @@ public final class KvTokenizer: Sendable {
             return try scanString()
         }
         
+        // Code block: `: |` with nothing but a comment after it
+        if byte == 0x7C, lastTokenType == .colon, restOfLineIsBlank(after: position + 1) { // '|'
+            return scanBlock()
+        }
+        
         // Numbers
         if isDigit(byte) {
             return scanNumber()
@@ -192,6 +205,8 @@ public final class KvTokenizer: Sendable {
                 break
             }
         }
+        
+        currentLineIndent = indent
         
         // Skip blank lines and comments
         if position < bytes.count && (bytes[position] == 0x0A || bytes[position] == 0x0D || bytes[position] == 0x23) {
@@ -290,6 +305,79 @@ public final class KvTokenizer: Sendable {
         
         let commentText = bytesToString(start: start, end: position)
         return Token(type: .comment(commentText), line: startLine, column: startColumn, length: commentText.count)
+    }
+    
+    /// Only whitespace or a comment between `index` and the end of the line?
+    private func restOfLineIsBlank(after index: Int) -> Bool {
+        var i = index
+        while i < bytes.count {
+            let byte = bytes[i]
+            if byte == 0x0A || byte == 0x0D || byte == 0x23 { return true } // newline or '#'
+            if byte != 0x20 && byte != 0x09 { return false }
+            i += 1
+        }
+        return true
+    }
+    
+    /// Scan the lines under a `|` that are indented past the property's line.
+    ///
+    /// The block is dedented by the shallowest line and joined with newlines,
+    /// so it can be handed to Python as written. Its lines never touch the
+    /// indent stack; a NEWLINE is queued so the parser sees the value end.
+    private func scanBlock() -> Token {
+        let startLine = line
+        let startColumn = column
+        
+        // Rest of the `|` line, comment included
+        while position < bytes.count && bytes[position] != 0x0A && bytes[position] != 0x0D {
+            advance()
+        }
+        if position < bytes.count {
+            _ = scanNewline()
+        }
+        
+        var lines: [(indent: Int, text: String)] = []
+        while position < bytes.count {
+            // Measure this line without committing to it
+            var i = position
+            var indent = 0
+            while i < bytes.count && (bytes[i] == 0x20 || bytes[i] == 0x09) {
+                indent += bytes[i] == 0x09 ? 4 : 1
+                i += 1
+            }
+            let blank = i >= bytes.count || bytes[i] == 0x0A || bytes[i] == 0x0D
+            if !blank && indent <= currentLineIndent { break }
+            
+            var end = i
+            while end < bytes.count && bytes[end] != 0x0A && bytes[end] != 0x0D { end += 1 }
+            lines.append((indent: blank ? Int.max : indent, text: bytesToString(start: position, end: end)))
+            
+            while position < end { advance() }
+            if position < bytes.count { _ = scanNewline() }
+        }
+        
+        // Trailing blank lines belong to whatever comes next
+        while let last = lines.last, last.indent == Int.max {
+            lines.removeLast()
+        }
+        
+        let common = lines.map(\.indent).min() ?? 0
+        let text = lines.map { entry -> String in
+            guard entry.indent != Int.max else { return "" }
+            var dropped = 0
+            var rest = Substring(entry.text)
+            while dropped < common, let first = rest.first, first == " " || first == "\t" {
+                dropped += first == "\t" ? 4 : 1
+                rest = rest.dropFirst()
+            }
+            return String(rest)
+        }.joined(separator: "\n")
+        
+        // The property line has ended; the next line's indentation is
+        // handled as usual once the queued NEWLINE is consumed.
+        pendingTokens.append(Token(type: .newline, line: startLine, column: startColumn))
+        atLineStart = true
+        return Token(type: .block(text), line: startLine, column: startColumn, length: 1)
     }
     
     private func scanNewline() -> Token {

@@ -6,7 +6,7 @@ struct TestParser {
     static func main() throws {
         let args = CommandLine.arguments
         guard args.count > 1 else {
-            print("Usage: test-parser <file.kv>")
+            print("Usage: test-parser <file.kv> [--tree] [--generate]")
             return
         }
         
@@ -44,5 +44,15 @@ struct TestParser {
             }
         }
         print("Root widget: \(module.root?.name ?? "none")")
+        print("Mode: \(module.mode)")
+        
+        if args.contains("--tree") {
+            print()
+            print(module.detailedTreeDescription())
+        }
+        if args.contains("--generate") {
+            print()
+            print(module.generate())
+        }
     }
 }

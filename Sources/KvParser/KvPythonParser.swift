@@ -1,3 +1,4 @@
+import Foundation
 import PySwiftAST
 
 /// Helper for parsing Python code in KV event handlers
@@ -53,5 +54,41 @@ public struct KvPythonParser {
             return ["Invalid Python syntax in handler"]
         }
         return []
+    }
+    
+    /// Format Python AST statements for the detailed tree view
+    internal static func formatTree(_ statements: [Statement], depth: Int, parentBranches: [Bool]) -> String {
+        var result = ""
+        for (index, stmt) in statements.enumerated() {
+            let isLast = index == statements.count - 1
+            let stmtLines = stmt.treeLines(indent: "", isLast: isLast)
+            
+            for (lineIndex, line) in stmtLines.enumerated() {
+                let prefix: String
+                
+                if lineIndex == 0 {
+                    // First line gets branch character
+                    prefix = TreeFormatter.prefix(depth: depth, isLast: isLast, parentBranches: parentBranches)
+                } else {
+                    // Continuation lines - need proper indentation matching tree structure
+                    var indent = ""
+                    for i in 0..<depth {
+                        if i < parentBranches.count && parentBranches[i] {
+                            indent += "│   "
+                        } else {
+                            indent += "    "
+                        }
+                    }
+                    // Add continuation for current level
+                    indent += isLast ? "    " : "│   "
+                    prefix = indent
+                }
+                
+                // Remove leading branch chars from PySwiftAST output since we're adding our own
+                let cleanLine = line.replacingOccurrences(of: "^[├└]── ", with: "", options: .regularExpression)
+                result += "\(prefix)\(cleanLine) [python_ast]\n"
+            }
+        }
+        return result
     }
 }

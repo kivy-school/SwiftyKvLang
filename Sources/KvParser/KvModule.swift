@@ -42,6 +42,14 @@ public struct KvModule: KvNode, Sendable {
         self.endLine = endLine
         self.endColumn = endColumn
     }
+    
+    /// Generator mode from the last #:mode directive ("default" when absent)
+    public var mode: String {
+        for directive in directives.reversed() {
+            if case .mode(let name, _) = directive { return name }
+        }
+        return KvMode.default.rawValue
+    }
 }
 
 extension KvModule: TreeDisplayable {
@@ -75,11 +83,16 @@ extension KvModule: TreeDisplayable {
                     items.append("kivy \(version)")
                 case .import(let alias, let package, _):
                     items.append("import \(package) as \(alias)")
+                case .from(let module, let name, let alias, _):
+                    let aliasStr = alias.map { " as \($0)" } ?? ""
+                    items.append("from \(module) import \(name)\(aliasStr)")
                 case .set(let name, let value, _):
                     items.append("set \(name) = \(value)")
                 case .include(let path, let force, _):
                     let forceStr = force ? " [force]" : ""
                     items.append("include\(forceStr) \(path)")
+                case .mode(let name, _):
+                    items.append("mode \(name)")
                 }
             }
             sections.append(Section(
@@ -157,18 +170,7 @@ extension KvModule: TreeDisplayable {
         
         // Add directives
         for directive in directives {
-            let name: String
-            switch directive {
-            case .kivy(let version, _):
-                name = "#:kivy \(version)"
-            case .import(let alias, let package, _):
-                name = "#:import \(alias) \(package)"
-            case .set(let n, let value, _):
-                name = "#:set \(n) \(value)"
-            case .include(let path, let force, _):
-                name = "#:include\(force ? " [force]" : "") \(path)"
-            }
-            allItems.append(.directive(name))
+            allItems.append(.directive(directive.sourceText))
         }
         
         // Add rules with full tree - content should be nested under rule name

@@ -52,61 +52,15 @@ public struct KvCodeGen {
     // MARK: - Directive Generation
     
     private static func generate(from directive: KvDirective) -> String {
-        switch directive {
-        case .kivy(let version, _):
-            return "#:kivy \(version)"
-        case .import(let alias, let package, _):
-            return "#:import \(alias) \(package)"
-        case .include(let path, let force, _):
-            return force ? "#:include <\(path)>" : "#:include \(path)"
-        case .set(let name, let value, _):
-            return "#:set \(name) \(value)"
-        }
+        return directive.sourceText
     }
     
     // MARK: - Rule Generation
     
     private static func generate(from rule: KvRule, baseIndent: String) -> String {
-        var output = ""
-        
-        // Generate selector
         let avoidPrefix = rule.avoidPrevious ? "-" : ""
-        output += "<\(avoidPrefix)\(generate(from: rule.selector))>\n"
-        
-        // Generate canvas.before
-        if let canvasBefore = rule.canvasBefore {
-            output += baseIndent + "canvas.before:\n"
-            output += generate(from: canvasBefore, level: 2, baseIndent: baseIndent)
-        }
-        
-        // Generate properties
-        for property in rule.properties {
-            output += baseIndent + generate(from: property)
-        }
-        
-        // Generate canvas
-        if let canvas = rule.canvas {
-            output += baseIndent + "canvas:\n"
-            output += generate(from: canvas, level: 2, baseIndent: baseIndent)
-        }
-        
-        // Generate canvas.after
-        if let canvasAfter = rule.canvasAfter {
-            output += baseIndent + "canvas.after:\n"
-            output += generate(from: canvasAfter, level: 2, baseIndent: baseIndent)
-        }
-        
-        // Generate event handlers
-        for handler in rule.handlers {
-            output += baseIndent + generate(from: handler)
-        }
-        
-        // Generate child widgets
-        for child in rule.children {
-            output += generate(from: child, level: 1, baseIndent: baseIndent)
-        }
-        
-        return output
+        return "<\(avoidPrefix)\(generate(from: rule.selector))>\n"
+            + generate(from: rule.body, level: 1, baseIndent: baseIndent)
     }
     
     // MARK: - Selector Generation
@@ -128,96 +82,76 @@ public struct KvCodeGen {
     // MARK: - Template Generation
     
     private static func generate(from template: KvTemplate, baseIndent: String) -> String {
-        var output = ""
-        
-        // Generate template header
         let basesStr = template.baseClasses.joined(separator: "+")
-        output += "[\(template.name)@\(basesStr)]:\n"
-        
-        // Generate rule body
-        let rule = template.rule
-        
-        // Generate canvas.before
-        if let canvasBefore = rule.canvasBefore {
-            output += baseIndent + "canvas.before:\n"
-            output += generate(from: canvasBefore, level: 2, baseIndent: baseIndent)
-        }
-        
-        // Generate properties
-        for property in rule.properties {
-            output += baseIndent + generate(from: property)
-        }
-        
-        // Generate canvas
-        if let canvas = rule.canvas {
-            output += baseIndent + "canvas:\n"
-            output += generate(from: canvas, level: 2, baseIndent: baseIndent)
-        }
-        
-        // Generate canvas.after
-        if let canvasAfter = rule.canvasAfter {
-            output += baseIndent + "canvas.after:\n"
-            output += generate(from: canvasAfter, level: 2, baseIndent: baseIndent)
-        }
-        
-        // Generate event handlers
-        for handler in rule.handlers {
-            output += baseIndent + generate(from: handler)
-        }
-        
-        // Generate child widgets
-        for child in rule.children {
-            output += generate(from: child, level: 1, baseIndent: baseIndent)
-        }
-        
-        return output
+        return "[\(template.name)@\(basesStr)]:\n"
+            + generate(from: template.rule.body, level: 1, baseIndent: baseIndent)
     }
     
     // MARK: - Widget Generation
     
     private static func generate(from widget: KvWidget, level: Int, baseIndent: String) -> String {
-        var output = ""
         let indent = String(repeating: baseIndent, count: level)
+        var output = indent + "\(widget.name):\n"
         
-        // Generate widget name
-        output += indent + "\(widget.name):\n"
-        
-        // Generate id if present
         if let id = widget.id {
             output += indent + baseIndent + "id: \(id)\n"
         }
         
-        // Generate canvas.before
-        if let canvasBefore = widget.canvasBefore {
-            output += indent + baseIndent + "canvas.before:\n"
-            output += generate(from: canvasBefore, level: level + 2, baseIndent: baseIndent)
+        output += generate(from: widget.body, level: level + 1, baseIndent: baseIndent)
+        return output
+    }
+    
+    // MARK: - Body Generation
+    
+    /// Generate the contents of an indented block at `level`
+    private static func generate(from body: KvBody, level: Int, baseIndent: String) -> String {
+        var output = ""
+        let indent = String(repeating: baseIndent, count: level)
+        
+        if let canvasBefore = body.canvasBefore {
+            output += indent + "canvas.before:\n"
+            output += generate(from: canvasBefore, level: level + 1, baseIndent: baseIndent)
         }
         
-        // Generate properties
-        for property in widget.properties {
-            output += indent + baseIndent + generate(from: property)
+        for property in body.properties {
+            output += indent + generate(from: property, level: level, baseIndent: baseIndent)
         }
         
-        // Generate canvas
-        if let canvas = widget.canvas {
-            output += indent + baseIndent + "canvas:\n"
-            output += generate(from: canvas, level: level + 2, baseIndent: baseIndent)
+        if let canvas = body.canvas {
+            output += indent + "canvas:\n"
+            output += generate(from: canvas, level: level + 1, baseIndent: baseIndent)
         }
         
-        // Generate canvas.after
-        if let canvasAfter = widget.canvasAfter {
-            output += indent + baseIndent + "canvas.after:\n"
-            output += generate(from: canvasAfter, level: level + 2, baseIndent: baseIndent)
+        if let canvasAfter = body.canvasAfter {
+            output += indent + "canvas.after:\n"
+            output += generate(from: canvasAfter, level: level + 1, baseIndent: baseIndent)
         }
         
-        // Generate event handlers
-        for handler in widget.handlers {
-            output += indent + baseIndent + generate(from: handler)
+        for handler in body.handlers {
+            output += indent + generate(from: handler, level: level, baseIndent: baseIndent)
         }
         
-        // Generate child widgets
-        for child in widget.children {
-            output += generate(from: child, level: level + 1, baseIndent: baseIndent)
+        for child in body.children {
+            output += generate(from: child, level: level, baseIndent: baseIndent)
+        }
+        
+        for conditional in body.conditionals {
+            output += generate(from: conditional, level: level, baseIndent: baseIndent)
+        }
+        
+        return output
+    }
+    
+    // MARK: - Conditional Generation
+    
+    private static func generate(from conditional: KvConditional, level: Int, baseIndent: String) -> String {
+        let indent = String(repeating: baseIndent, count: level)
+        var output = indent + "\(conditional.headerText):\n"
+        output += generate(from: conditional.body, level: level + 1, baseIndent: baseIndent)
+        
+        if let elseBody = conditional.elseBody {
+            output += indent + "\(conditional.elseKeyword):\n"
+            output += generate(from: elseBody, level: level + 1, baseIndent: baseIndent)
         }
         
         return output
@@ -225,8 +159,17 @@ public struct KvCodeGen {
     
     // MARK: - Property Generation
     
-    private static func generate(from property: KvProperty) -> String {
-        return "\(property.name): \(property.value)\n"
+    /// `name: value`, or `name: |` with the block re-indented one level deeper
+    private static func generate(from property: KvProperty, level: Int, baseIndent: String) -> String {
+        guard property.isBlock else {
+            return "\(property.name): \(property.value)\n"
+        }
+        let inner = String(repeating: baseIndent, count: level + 1)
+        let lines = property.value
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { $0.isEmpty ? "" : inner + $0 }
+            .joined(separator: "\n")
+        return "\(property.name): |\n" + lines + "\n"
     }
     
     // MARK: - Canvas Generation
@@ -254,7 +197,7 @@ public struct KvCodeGen {
         if !instruction.properties.isEmpty {
             let indent = String(repeating: baseIndent, count: level + 1)
             for property in instruction.properties {
-                output += indent + generate(from: property)
+                output += indent + generate(from: property, level: level + 1, baseIndent: baseIndent)
             }
         }
         

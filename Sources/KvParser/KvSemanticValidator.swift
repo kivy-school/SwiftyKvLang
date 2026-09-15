@@ -83,27 +83,7 @@ public class KvSemanticValidator: KvVisitor {
         // Validate selector
         validateSelector(rule.selector, line: rule.line)
         
-        // Continue traversal
-        for property in rule.properties {
-            visitProperty(property)
-        }
-        for handler in rule.handlers {
-            visitProperty(handler)
-        }
-        
-        if let canvas = rule.canvas {
-            visitCanvas(canvas)
-        }
-        if let canvasBefore = rule.canvasBefore {
-            visitCanvas(canvasBefore)
-        }
-        if let canvasAfter = rule.canvasAfter {
-            visitCanvas(canvasAfter)
-        }
-        
-        for child in rule.children {
-            visitWidget(child)
-        }
+        visitBody(rule.body)
         
         currentRule = nil
     }
@@ -112,26 +92,17 @@ public class KvSemanticValidator: KvVisitor {
         // Validate widget class name
         validateWidgetName(widget.name, line: widget.line)
         
-        // Continue traversal
-        for property in widget.properties {
-            visitProperty(property)
-        }
-        for handler in widget.handlers {
-            visitProperty(handler)
-        }
-        
-        if let canvas = widget.canvas {
-            visitCanvas(canvas)
-        }
-        if let canvasBefore = widget.canvasBefore {
-            visitCanvas(canvasBefore)
-        }
-        if let canvasAfter = widget.canvasAfter {
-            visitCanvas(canvasAfter)
+        visitBody(widget.body)
+    }
+    
+    public func visitConditional(_ conditional: KvConditional) {
+        if let condition = conditional.condition {
+            validateExpression(condition, propertyName: "if", line: conditional.line)
         }
         
-        for child in widget.children {
-            visitWidget(child)
+        visitBody(conditional.body)
+        if let elseBody = conditional.elseBody {
+            visitBody(elseBody)
         }
     }
     

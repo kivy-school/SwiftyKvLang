@@ -664,7 +664,7 @@ final class KvParserTests: XCTestCase {
         XCTAssertTrue(generated.contains("canvas:"))
         XCTAssertTrue(generated.contains("Color:"))
         XCTAssertTrue(generated.contains("Rectangle:"))
-        XCTAssertTrue(generated.contains("rgba: 1 , 1 , 1 , 1"))
+        XCTAssertTrue(generated.contains("rgba: 1, 1, 1, 1"))
         XCTAssertTrue(generated.contains("pos: self.pos"))
     }
     
@@ -1268,6 +1268,548 @@ final class KvParserTests: XCTestCase {
         
         print("\n=== Detailed Tree with Python AST ===")
         print(detailed)
+    }
+
+    // MARK: - New Directive Tests (#:mode, #:from)
+    
+    private func parse(_ source: String) throws -> KvModule {
+        let tokens = try KvTokenizer(source: source).tokenize()
+        return try KvParser(tokens: tokens).parse()
+    }
+    
+    func testParseModeDirective() throws {
+        let module = try parse("""
+        #:mode carbonkivy
+        
+        <Widget>:
+            text: 'x'
+        """)
+        
+        XCTAssertEqual(module.directives.count, 1)
+        guard case .mode(let name, let line) = module.directives[0] else {
+            return XCTFail("Expected .mode directive")
+        }
+        XCTAssertEqual(name, "carbonkivy")
+        XCTAssertEqual(line, 1)
+        XCTAssertEqual(module.mode, "carbonkivy")
+        XCTAssertEqual(KvMode(rawValue: module.mode), .carbonkivy)
+    }
+    
+    func testModeDefaultsWhenAbsent() throws {
+        let module = try parse("<Widget>:\n    text: 'x'")
+        XCTAssertEqual(module.mode, "default")
+    }
+    
+    func testModeDirectiveRequiresSingleName() throws {
+        let tokens = try KvTokenizer(source: "#:mode\n").tokenize()
+        XCTAssertThrowsError(try KvParser(tokens: tokens).parse())
+        
+        let tokens2 = try KvTokenizer(source: "#:mode a b\n").tokenize()
+        XCTAssertThrowsError(try KvParser(tokens: tokens2).parse())
+    }
+    
+    func testParseFromDirective() throws {
+        let module = try parse("""
+        #:from x.y.z import abc
+        #:from x.y.z import abc as cba
+        """)
+        
+        XCTAssertEqual(module.directives.count, 2)
+        
+        guard case .from(let module1, let name1, let alias1, _) = module.directives[0] else {
+            return XCTFail("Expected .from directive")
+        }
+        XCTAssertEqual(module1, "x.y.z")
+        XCTAssertEqual(name1, "abc")
+        XCTAssertNil(alias1)
+        
+        guard case .from(let module2, let name2, let alias2, _) = module.directives[1] else {
+            return XCTFail("Expected .from directive")
+        }
+        XCTAssertEqual(module2, "x.y.z")
+        XCTAssertEqual(name2, "abc")
+        XCTAssertEqual(alias2, "cba")
+    }
+    
+    func testFromDirectiveRejectsMalformed() throws {
+        for bad in ["#:from x.y.z abc", "#:from x.y.z import", "#:from x.y.z import abc as", "#:from x import a b"] {
+            let tokens = try KvTokenizer(source: bad + "\n").tokenize()
+            XCTAssertThrowsError(try KvParser(tokens: tokens).parse(), "Should reject: \(bad)")
+        }
+    }
+    
+    func testGenerateNewDirectives() throws {
+        let source = """
+        #:mode swiftui
+        #:from x.y.z import abc
+        #:from x.y.z import abc as cba
+        #:include force other.kv
+        
+        <Widget>:
+            text: 'x'
+        """
+        let module = try parse(source)
+        let generated = module.generate()
+        
+        XCTAssertTrue(generated.contains("#:mode swiftui\n"))
+        XCTAssertTrue(generated.contains("#:from x.y.z import abc\n"))
+        XCTAssertTrue(generated.contains("#:from x.y.z import abc as cba\n"))
+        XCTAssertTrue(generated.contains("#:include force other.kv\n"))
+        
+        // Round trip
+        let reparsed = try parse(generated)
+        XCTAssertEqual(reparsed.directives.count, 4)
+        XCTAssertEqual(reparsed.directives.map { $0.sourceText }, module.directives.map { $0.sourceText })
+    }
+    
+    // MARK: - Conditional Block Tests (if/else, try/expect)
+    
+    private let conditionalSource = """
+    <MyWidget@BoxLayout>:
+        if self.disabled_state: # if true show label else button..
+            Label:
+                text: "no press"
+        else:
+            Button:
+                text: "press me"
+        if self.other_state: # only show button if true
+            Button:
+                text: "extra press"
+        try: # if no issues with proeprties or binding stuff
+            Button:
+                text: "success"
+        expect:
+            Label:
+                text: "failed"
+    """
+    
+    func testParseConditionalBlocks() throws {
+        let module = try parse(conditionalSource)
+        
+        XCTAssertEqual(module.rules.count, 1)
+        let rule = module.rules[0]
+        XCTAssertEqual(rule.children.count, 0, "Branch widgets must not leak into the rule's children")
+        XCTAssertEqual(rule.conditionals.count, 3)
+        
+        // if / else
+        let ifElse = rule.conditionals[0]
+        XCTAssertEqual(ifElse.line, 2)
+        guard case .if(let condition, let watched) = ifElse.kind else {
+            return XCTFail("Expected .if")
+        }
+        XCTAssertEqual(condition, "self.disabled_state")
+        XCTAssertEqual(watched, [["self", "disabled_state"]])
+        XCTAssertEqual(ifElse.body.children.map { $0.name }, ["Label"])
+        XCTAssertEqual(ifElse.body.children[0].properties.first?.value, "\"no press\"")
+        XCTAssertEqual(ifElse.elseBody?.children.map { $0.name }, ["Button"])
+        XCTAssertEqual(ifElse.elseBody?.children[0].properties.first?.value, "\"press me\"")
+        
+        // if without else
+        let ifOnly = rule.conditionals[1]
+        XCTAssertEqual(ifOnly.condition, "self.other_state")
+        XCTAssertEqual(ifOnly.body.children.map { $0.name }, ["Button"])
+        XCTAssertNil(ifOnly.elseBody)
+        
+        // try / expect
+        let tryExpect = rule.conditionals[2]
+        XCTAssertEqual(tryExpect.kind, .try)
+        XCTAssertNil(tryExpect.condition)
+        XCTAssertEqual(tryExpect.body.children.map { $0.name }, ["Button"])
+        XCTAssertEqual(tryExpect.elseBody?.children.map { $0.name }, ["Label"])
+        XCTAssertEqual(tryExpect.elseBody?.children[0].properties.first?.value, "\"failed\"")
+    }
+    
+    func testConditionalBranchesHoldFullBodies() throws {
+        let module = try parse("""
+        Widget:
+            if root.compact:
+                height: 20
+                on_release: print("hi")
+                canvas:
+                    Color:
+                        rgba: 1, 0, 0, 1
+                Label:
+                    id: inner
+                    text: "a"
+                if app.dark:
+                    Button:
+                        text: "nested"
+                else:
+                    Label:
+                        text: "nested else"
+            text: "after"
+        """)
+        
+        let root = try XCTUnwrap(module.root)
+        XCTAssertEqual(root.properties.map { $0.name }, ["text"])
+        XCTAssertEqual(root.conditionals.count, 1)
+        
+        let body = root.conditionals[0].body
+        XCTAssertEqual(body.properties.map { $0.name }, ["height"])
+        XCTAssertEqual(body.handlers.map { $0.name }, ["on_release"])
+        XCTAssertEqual(body.canvas?.instructions.count, 1)
+        XCTAssertEqual(body.children.count, 1)
+        XCTAssertEqual(body.children[0].id, "inner")
+        
+        // Nested conditional
+        XCTAssertEqual(body.conditionals.count, 1)
+        let nested = body.conditionals[0]
+        XCTAssertEqual(nested.condition, "app.dark")
+        XCTAssertEqual(nested.body.children.first?.name, "Button")
+        XCTAssertEqual(nested.elseBody?.children.first?.name, "Label")
+    }
+    
+    func testConditionalInsideChildWidget() throws {
+        let module = try parse("""
+        <Screen>:
+            BoxLayout:
+                if self.wide:
+                    Label:
+                        text: "wide"
+        """)
+        
+        let box = module.rules[0].children[0]
+        XCTAssertEqual(box.conditionals.count, 1)
+        XCTAssertEqual(box.conditionals[0].body.children.first?.name, "Label")
+    }
+    
+    func testComparisonOperatorsSurviveReconstruction() throws {
+        let module = try parse("""
+        <W>:
+            a: self.x > 3 and self.y < 4
+            b: self.x >= 3 or self.y <= 4
+            c: self.x == 3 and self.y != 4
+            if root.width > 400:
+                Label:
+                    text: "wide"
+        """)
+        
+        let props = Dictionary(uniqueKeysWithValues: module.rules[0].properties.map { ($0.name, $0.value) })
+        XCTAssertEqual(props["a"]?.replacingOccurrences(of: " ", with: ""), "self.x>3andself.y<4")
+        XCTAssertEqual(props["b"]?.replacingOccurrences(of: " ", with: ""), "self.x>=3orself.y<=4")
+        XCTAssertEqual(props["c"]?.replacingOccurrences(of: " ", with: ""), "self.x==3andself.y!=4")
+        XCTAssertEqual(props["b"]?.contains("> ="), false, "'>=' must stay one operator")
+        XCTAssertEqual(module.rules[0].conditionals[0].condition?.replacingOccurrences(of: " ", with: ""), "root.width>400")
+    }
+    
+    func testMultiLineHandlerWithNestedBlockDoesNotLeak() throws {
+        let module = try parse("""
+        <StatusLabel@Label>:
+            error: False
+            on_error:
+                if self.error:
+                    self.color = 1, 0, 0, 1
+                    self.bold = True
+                else:
+                    self.color = 1, 1, 1, 1
+            text: "after"
+        
+        <ConditionalBox@BoxLayout>:
+            if root.state:
+                Button:
+                    text: "press me"
+            else:
+                Label:
+                    text: "cant press me"
+        """)
+        
+        XCTAssertEqual(module.rules.count, 2)
+        let status = module.rules[0]
+        XCTAssertEqual(status.properties.map { $0.name }, ["error", "text"])
+        XCTAssertEqual(status.handlers.map { $0.name }, ["on_error"])
+        XCTAssertTrue(status.handlers[0].value.contains("else"))
+        XCTAssertTrue(status.conditionals.isEmpty, "the handler's else must stay inside the handler")
+        
+        let box = module.rules[1]
+        XCTAssertEqual(box.conditionals.count, 1)
+        XCTAssertEqual(box.conditionals[0].elseBody?.children.first?.name, "Label")
+    }
+    
+    func testIfConditionMayContainColons() throws {
+        let module = try parse("""
+        <W>:
+            if self.items[1:2] and root.mode == "x":
+                Label:
+                    text: "slice"
+        """)
+        
+        let cond = module.rules[0].conditionals[0]
+        // Token reconstruction spaces out ':' like it does for property values; compare ignoring spaces
+        XCTAssertEqual(cond.condition?.replacingOccurrences(of: " ", with: ""), "self.items[1:2]androot.mode==\"x\"")
+        XCTAssertEqual(cond.body.children.first?.name, "Label")
+    }
+    
+    func testExceptIsAcceptedAsExpectAlias() throws {
+        let module = try parse("""
+        <W>:
+            try:
+                Button:
+                    text: "ok"
+            except:
+                Label:
+                    text: "no"
+        """)
+        
+        let cond = module.rules[0].conditionals[0]
+        XCTAssertEqual(cond.kind, .try)
+        XCTAssertEqual(cond.elseBody?.children.first?.name, "Label")
+    }
+    
+    func testConditionalSyntaxErrors() throws {
+        let cases: [(String, String)] = [
+            ("bare else", "<W>:\n    else:\n        Label:\n            text: 'x'\n"),
+            ("bare expect", "<W>:\n    expect:\n        Label:\n            text: 'x'\n"),
+            ("else after try", "<W>:\n    try:\n        Label:\n            text: 'x'\n    else:\n        Label:\n            text: 'y'\n"),
+            ("if without colon", "<W>:\n    if self.x\n        Label:\n            text: 'x'\n"),
+            ("if without body", "<W>:\n    if self.x:\n    text: 'y'\n"),
+            ("empty condition", "<W>:\n    if :\n        Label:\n            text: 'x'\n"),
+            ("try without colon", "<W>:\n    try\n        Label:\n            text: 'x'\n"),
+        ]
+        
+        for (label, source) in cases {
+            let tokens = try KvTokenizer(source: source).tokenize()
+            XCTAssertThrowsError(try KvParser(tokens: tokens).parse(), "Should fail: \(label)")
+        }
+    }
+    
+    func testGenerateConditionalBlocks() throws {
+        let module = try parse(conditionalSource)
+        let generated = module.generate()
+        
+        let expected = """
+        <MyWidget@BoxLayout>
+            if self.disabled_state:
+                Label:
+                    text: "no press"
+            else:
+                Button:
+                    text: "press me"
+            if self.other_state:
+                Button:
+                    text: "extra press"
+            try:
+                Button:
+                    text: "success"
+            expect:
+                Label:
+                    text: "failed"
+        
+        """
+        XCTAssertEqual(generated, expected)
+        
+        // Round trip
+        let reparsed = try parse(generated)
+        XCTAssertEqual(reparsed.rules[0].conditionals.count, 3)
+        XCTAssertEqual(reparsed.generate(), generated)
+    }
+    
+    func testVisitorsTraverseConditionals() throws {
+        let module = try parse(conditionalSource)
+        
+        let widgets = WidgetNameCollector()
+        module.accept(visitor: widgets)
+        XCTAssertEqual(widgets.widgetNames, ["Label", "Button", "Button", "Button", "Label"])
+        
+        let stats = ASTStatistics()
+        module.accept(visitor: stats)
+        XCTAssertEqual(stats.ruleCount, 1)
+        XCTAssertEqual(stats.widgetCount, 5)
+        XCTAssertEqual(stats.propertyCount, 5)
+        XCTAssertEqual(stats.conditionalCount, 3)
+        
+        let finder = WatchedPropertyFinder()
+        module.accept(visitor: finder)
+        let ifBindings = finder.watchedProperties.filter { $0.property == "if" }
+        XCTAssertEqual(ifBindings.count, 2)
+        XCTAssertEqual(ifBindings[0].keys, [["self", "disabled_state"]])
+    }
+    
+    func testValidatorSeesBranchWidgets() throws {
+        let module = try parse("""
+        <W>:
+            if self.x:
+                Bogus:
+                    text: "x"
+            else:
+                Label:
+                    colour: 1, 1, 1, 1
+        """)
+        
+        let result = KvSemanticValidator.validate(module)
+        XCTAssertTrue(result.issues.contains { $0.message.contains("Unknown widget type: 'Bogus'") })
+        XCTAssertTrue(result.issues.contains { $0.message.contains("Invalid property name: 'colour'") })
+    }
+    
+    func testTreeViewsIncludeConditionals() throws {
+        let module = try parse(conditionalSource)
+        
+        let detailed = module.detailedTreeDescription()
+        XCTAssertTrue(detailed.contains("if self.disabled_state [conditional, line 2]"))
+        XCTAssertTrue(detailed.contains("then"))
+        XCTAssertTrue(detailed.contains("else"))
+        XCTAssertTrue(detailed.contains("try [conditional, line 11]"))
+        XCTAssertTrue(detailed.contains("expect"))
+        XCTAssertTrue(detailed.contains("Label [widget, line 3]"))
+        
+        let summary = module.rules[0].treeDescription()
+        XCTAssertTrue(summary.contains("Conditionals (3):"))
+        XCTAssertTrue(summary.contains("if self.disabled_state: [line 2]"))
+    }
+
+    // MARK: - Block Values (name: |)
+    
+    func testBlockValueKeepsItsLines() throws {
+        let module = try parse("""
+        Button:
+            text: |
+                if self.state == "down":
+                    return "pressed"
+                else:
+                    return "released"
+            on_press: |
+                # now we can use as many lines we want as long right indent
+                print("a")
+
+                print("b")
+            on_release:| #should be allowed also,
+                #just strip spaces and check if it starts
+                #with | then it should be written as function else as expression
+            size_hint: 1, 1
+        """)
+        
+        let root = try XCTUnwrap(module.root)
+        XCTAssertEqual(root.properties.map { $0.name }, ["text", "size_hint"])
+        XCTAssertEqual(root.handlers.map { $0.name }, ["on_press", "on_release"])
+        
+        let text = root.properties[0]
+        XCTAssertTrue(text.isBlock)
+        XCTAssertEqual(text.value, """
+        if self.state == "down":
+            return "pressed"
+        else:
+            return "released"
+        """)
+        guard case .code = text.compiledValue else { return XCTFail("block should compile as code") }
+        XCTAssertEqual(text.watchedKeys, [["self", "state"]])
+        XCTAssertEqual(text.pythonAST?.count, 1, "the if/else parses as one statement")
+        
+        let press = root.handlers[0]
+        XCTAssertTrue(press.isBlock)
+        XCTAssertEqual(press.value, "# now we can use as many lines we want as long right indent\nprint(\"a\")\n\nprint(\"b\")")
+        XCTAssertEqual(press.pythonAST?.count, 2)
+        
+        let release = root.handlers[1]
+        XCTAssertTrue(release.isBlock)
+        XCTAssertTrue(release.value.hasPrefix("#just strip spaces"))
+        
+        // The line after the block is a normal property again
+        XCTAssertFalse(root.properties[1].isBlock)
+        XCTAssertEqual(root.properties[1].value, "1, 1")
+    }
+    
+    func testBlockValueEndsAtTheRulesIndent() throws {
+        let module = try parse("""
+        <StatusLabel@Label>:
+            error: False
+            on_error: |
+                if self.error:
+                    self.color = 1, 0, 0, 1
+                else:
+                    self.color = 1, 1, 1, 1
+            text: "after"
+        
+        <Other@Label>:
+            text: "x"
+        """)
+        
+        XCTAssertEqual(module.rules.count, 2)
+        let rule = module.rules[0]
+        XCTAssertEqual(rule.properties.map { $0.name }, ["error", "text"])
+        XCTAssertEqual(rule.handlers[0].value.split(separator: "\n").count, 4)
+        XCTAssertTrue(rule.conditionals.isEmpty)
+    }
+    
+    func testBlockWatchedKeysAcrossLines() throws {
+        let module = try parse("""
+        <W>:
+            b: |
+                if self.error:  # comment
+                    return root.width
+                return app.title
+        """)
+        let keys = module.rules[0].properties[0].watchedKeys ?? []
+        XCTAssertEqual(Set(keys.map { $0.joined(separator: ".") }), ["self.error", "root.width", "app.title"])
+    }
+    
+    func testEmptyBlockAndBlockAtEndOfFile() throws {
+        let module = try parse("<W>:\n    on_press: |\n    text: 'x'\n    on_release: |\n        print(1)")
+        let rule = module.rules[0]
+        XCTAssertEqual(rule.handlers[0].value, "")
+        XCTAssertTrue(rule.handlers[0].isBlock)
+        XCTAssertEqual(rule.properties[0].value, "\"x\"")
+        XCTAssertEqual(rule.handlers[1].value, "print(1)")
+    }
+    
+    func testPipeInsideAnExpressionIsNotABlock() throws {
+        let module = try parse("<W>:\n    flags: self.a | self.b\n")
+        let prop = module.rules[0].properties[0]
+        XCTAssertFalse(prop.isBlock)
+        XCTAssertEqual(prop.value.replacingOccurrences(of: " ", with: ""), "self.a|self.b")
+    }
+    
+    func testBlockInCanvasInstruction() throws {
+        let module = try parse("""
+        <W>:
+            canvas:
+                Color:
+                    rgba: |
+                        if self.disabled:
+                            return 0.5, 0.5, 0.5, 1
+                        return 1, 1, 1, 1
+        """)
+        let rgba = module.rules[0].canvas!.instructions[0].properties[0]
+        XCTAssertTrue(rgba.isBlock)
+        XCTAssertEqual(rgba.value.split(separator: "\n").count, 3)
+        XCTAssertEqual(rgba.watchedKeys, [["self", "disabled"]])
+    }
+    
+    func testGenerateBlockValues() throws {
+        let source = """
+        <W@Label>:
+            text: |
+                if self.state == "down":
+                    return "pressed"
+                return "released"
+            on_press: |
+                print("a")
+            Button:
+                on_release: |
+                    print("b")
+        
+        """
+        let module = try parse(source)
+        let generated = module.generate()
+        
+        let expected = """
+        <W@Label>
+            text: |
+                if self.state == "down":
+                    return "pressed"
+                return "released"
+            on_press: |
+                print("a")
+            Button:
+                on_release: |
+                    print("b")
+        
+        """
+        XCTAssertEqual(generated, expected)
+        
+        let reparsed = try parse(generated)
+        XCTAssertEqual(reparsed.rules[0].properties[0].value, module.rules[0].properties[0].value)
+        XCTAssertEqual(reparsed.rules[0].children[0].handlers[0].value, "print(\"b\")")
+        
+        XCTAssertTrue(module.detailedTreeDescription().contains("text: | (3 lines) [property, line 2]"))
     }
 }
 

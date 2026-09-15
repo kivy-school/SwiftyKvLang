@@ -39,6 +39,9 @@ public struct KvWidget: KvNode, Sendable {
     /// Event handlers (properties starting with on_)
     public let handlers: [KvProperty]
     
+    /// Conditional blocks (if/else, try/expect)
+    public let conditionals: [KvConditional]
+    
     /// Indentation level in source (0 = root)
     public let level: Int
     
@@ -57,6 +60,7 @@ public struct KvWidget: KvNode, Sendable {
         canvas: KvCanvas? = nil,
         canvasAfter: KvCanvas? = nil,
         handlers: [KvProperty] = [],
+        conditionals: [KvConditional] = [],
         level: Int = 0,
         line: Int,
         column: Int = 0,
@@ -71,11 +75,41 @@ public struct KvWidget: KvNode, Sendable {
         self.canvas = canvas
         self.canvasAfter = canvasAfter
         self.handlers = handlers
+        self.conditionals = conditionals
         self.level = level
         self.line = line
         self.column = column
         self.endLine = endLine
         self.endColumn = endColumn
+    }
+    
+    public init(name: String, id: String? = nil, body: KvBody, level: Int = 0, line: Int) {
+        self.init(
+            name: name,
+            id: id,
+            properties: body.properties,
+            children: body.children,
+            canvasBefore: body.canvasBefore,
+            canvas: body.canvas,
+            canvasAfter: body.canvasAfter,
+            handlers: body.handlers,
+            conditionals: body.conditionals,
+            level: level,
+            line: line
+        )
+    }
+    
+    /// Body contents as a single value (id excluded)
+    public var body: KvBody {
+        KvBody(
+            properties: properties,
+            handlers: handlers,
+            canvasBefore: canvasBefore,
+            canvas: canvas,
+            canvasAfter: canvasAfter,
+            children: children,
+            conditionals: conditionals
+        )
     }
 }
 
@@ -121,111 +155,16 @@ extension KvWidget: TreeDisplayable {
             }
         }
         
+        for conditional in conditionals {
+            result += conditional.treeDescription(indent: indent + 1)
+        }
+        
         return result
     }
     
     /// Detailed tree content for deep traversal
     internal func detailedContent(depth: Int, parentBranches: [Bool]) -> String {
-        var result = ""
-        var childIndex = 0
-        let totalItems = properties.count + handlers.count + (canvasBefore != nil ? 1 : 0) + (canvas != nil ? 1 : 0) + (canvasAfter != nil ? 1 : 0) + children.count
-        
-        // Properties
-        for prop in properties {
-            let isLast = childIndex == totalItems - 1
-            let prefix = TreeFormatter.prefix(depth: depth, isLast: isLast, parentBranches: parentBranches)
-            result += "\(prefix)\(prop.name): \(prop.value) [property, line \(prop.line)]\n"
-            childIndex += 1
-        }
-        
-        // Event handlers
-        for handler in handlers {
-            let isLast = childIndex == totalItems - 1
-            let prefix = TreeFormatter.prefix(depth: depth, isLast: isLast, parentBranches: parentBranches)
-            result += "\(prefix)\(handler.name): \(handler.value) [handler, line \(handler.line)]\n"
-            
-            // Show Python AST if available
-            if let ast = handler.pythonAST, !ast.isEmpty {
-                result += formatPythonAST(ast, depth: depth + 1, parentBranches: parentBranches + [!isLast])
-            }
-            
-            childIndex += 1
-        }
-        
-        // Canvas.before
-        if let canvasBefore = canvasBefore {
-            let isLast = childIndex == totalItems - 1
-            let prefix = TreeFormatter.prefix(depth: depth, isLast: isLast, parentBranches: parentBranches)
-            result += "\(prefix)canvas.before [canvas, line \(canvasBefore.line)]\n"
-            result += canvasBefore.detailedContent(depth: depth + 1, parentBranches: parentBranches + [!isLast])
-            childIndex += 1
-        }
-        
-        // Canvas
-        if let canvas = canvas {
-            let isLast = childIndex == totalItems - 1
-            let prefix = TreeFormatter.prefix(depth: depth, isLast: isLast, parentBranches: parentBranches)
-            result += "\(prefix)canvas [canvas, line \(canvas.line)]\n"
-            result += canvas.detailedContent(depth: depth + 1, parentBranches: parentBranches + [!isLast])
-            childIndex += 1
-        }
-        
-        // Canvas.after
-        if let canvasAfter = canvasAfter {
-            let isLast = childIndex == totalItems - 1
-            let prefix = TreeFormatter.prefix(depth: depth, isLast: isLast, parentBranches: parentBranches)
-            result += "\(prefix)canvas.after [canvas, line \(canvasAfter.line)]\n"
-            result += canvasAfter.detailedContent(depth: depth + 1, parentBranches: parentBranches + [!isLast])
-            childIndex += 1
-        }
-        
-        // Child widgets
-        for child in children {
-            let isLast = childIndex == totalItems - 1
-            let prefix = TreeFormatter.prefix(depth: depth, isLast: isLast, parentBranches: parentBranches)
-            let idInfo = child.id != nil ? ", id: \(child.id!)" : ""
-            result += "\(prefix)\(child.name) [widget, line \(child.line)\(idInfo)]\n"
-            result += child.detailedContent(depth: depth + 1, parentBranches: parentBranches + [!isLast])
-            childIndex += 1
-        }
-        
-        return result
-    }
-    
-    /// Format Python AST statements for tree display
-    private func formatPythonAST(_ statements: [Statement], depth: Int, parentBranches: [Bool]) -> String {
-        var result = ""
-        for (index, stmt) in statements.enumerated() {
-            let isLast = index == statements.count - 1
-            let stmtLines = stmt.treeLines(indent: "", isLast: isLast)
-            
-            for (lineIndex, line) in stmtLines.enumerated() {
-                let prefix: String
-                
-                if lineIndex == 0 {
-                    // First line gets branch character
-                    prefix = TreeFormatter.prefix(depth: depth, isLast: isLast, parentBranches: parentBranches)
-                } else {
-                    // Continuation lines - need proper indentation matching tree structure
-                    var indent = ""
-                    for i in 0..<depth {
-                        if i < parentBranches.count && parentBranches[i] {
-                            indent += "│   "
-                        } else {
-                            indent += "    "
-                        }
-                    }
-                    // Add continuation for current level
-                    indent += isLast ? "    " : "│   "
-                    prefix = indent
-                }
-                
-                // Remove leading branch chars from PySwiftAST output since we're adding our own
-                let cleanLine = line.replacingOccurrences(of: "^[├└]── ", with: "", options: .regularExpression)
-                result += "\(prefix)\(cleanLine) [python_ast]\n"
-            }
-        }
-        return result
+        body.detailedContent(depth: depth, parentBranches: parentBranches)
     }
 }
 
@@ -255,8 +194,12 @@ public struct KvProperty: KvNode, Sendable {
     /// Used for property overrides
     public let ignorePrevious: Bool
     
-    /// Python AST for event handlers (when name starts with "on_")
-    /// Parsed from the value using PySwiftAST as statement(s)
+    /// Written as `name: |` with an indented code block: the value is a
+    /// function body (returning the value, or the handler's statements),
+    /// not an expression.
+    public let isBlock: Bool
+    
+    /// Python AST for event handlers and blocks, parsed as statement(s)
     public let pythonAST: [Statement]?
     
     // Position tracking
@@ -271,6 +214,7 @@ public struct KvProperty: KvNode, Sendable {
         compiledValue: KvCompiledValue = .expression(""),
         watchedKeys: [[String]]? = nil,
         ignorePrevious: Bool = false,
+        isBlock: Bool = false,
         pythonAST: [Statement]? = nil,
         line: Int,
         column: Int = 0,
@@ -282,6 +226,7 @@ public struct KvProperty: KvNode, Sendable {
         self.compiledValue = compiledValue
         self.watchedKeys = watchedKeys
         self.ignorePrevious = ignorePrevious
+        self.isBlock = isBlock
         self.pythonAST = pythonAST
         self.line = line
         self.column = column
@@ -290,10 +235,19 @@ public struct KvProperty: KvNode, Sendable {
     }
 }
 
+extension KvProperty {
+    /// The value on one line: blocks are summarised by their line count
+    public var displayValue: String {
+        guard isBlock else { return value }
+        let count = value.isEmpty ? 0 : value.split(separator: "\n", omittingEmptySubsequences: false).count
+        return "| (\(count) line\(count == 1 ? "" : "s"))"
+    }
+}
+
 extension KvProperty: TreeDisplayable {
     public func treeDescription(indent: Int = 0) -> String {
         let prefix = String(repeating: "  ", count: indent)
-        var result = "\(prefix)\(name): \(value)"
+        var result = "\(prefix)\(name): \(displayValue)"
         
         if let watched = watchedKeys, !watched.isEmpty {
             let keys = watched.map { $0.joined(separator: ".") }.joined(separator: ", ")
